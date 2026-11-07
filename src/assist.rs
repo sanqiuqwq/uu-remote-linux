@@ -58,9 +58,9 @@ impl Refresh {
         match self { Self::Hour => Some(3600), Self::Hour12 => Some(12 * 3600), Self::Hour24 => Some(24 * 3600), _ => None }.map(std::time::Duration::from_secs)
     }
 }
-/// Mainland mobile numbers are shown like the official client: 186******08.
+/// Mainland mobile numbers are never shown: full mask instead of the official 186******08.
 pub fn display_account(name: &str) -> String {
-    if name.len() == 11 && name.bytes().all(|b| b.is_ascii_digit()) { format!("{}******{}", &name[..3], &name[9..]) } else { name.to_owned() }
+    if name.len() == 11 && name.bytes().all(|b| b.is_ascii_digit()) { "*".repeat(name.len()) } else { name.to_owned() }
 }
 /// 8-16 ASCII letters/digits including both (official RecipientCustomCodeView rules).
 fn valid_custom(code: &str) -> bool {

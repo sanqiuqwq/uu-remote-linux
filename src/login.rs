@@ -247,7 +247,7 @@ pub async fn run(gui: bool) -> Result<(), String> {
     };
     match &result {
         Ok(name) => {
-            ui.done(&crate::tr!("登录成功\n{name}","Signed in\n{name}"));
+            ui.done(&crate::tr!("登录成功\n{}","Signed in\n{}", crate::assist::display_account(name)));
             ui.status(crate::i18n::s("登录信息已保存到本机配置，可以关闭此窗口","Sign-in saved to the local config; you can close this window"), Tone::Ok);
         }
         Err(e) => { eprintln!("login failed: {e}"); ui.status(&crate::tr!("登录失败：{e}","Sign-in failed: {e}"), Tone::Error); }
@@ -410,7 +410,7 @@ pub(crate) async fn flow(ui: &LoginUi) -> Result<String, String> {
                         for (k, v) in fresh { if cfg.get(&k).is_none() { cfg[k] = v; } }
                     }
                     let path = write_config(&cfg)?;
-                    println!("Logged in as {} ({}); saved to {}", nickname, user, path.display());
+                    println!("{}: {}", crate::i18n::s("登录成功，配置已保存","Signed in; configuration saved"), path.display());
                     return Ok(if nickname.is_empty() { user.to_string() } else { nickname.to_string() });
                 }
                 QrPollAction::Failed(reason) => {
