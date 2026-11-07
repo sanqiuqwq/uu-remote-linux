@@ -320,9 +320,9 @@ impl Assist {
         let setting = |key: &str| config.get(key).and_then(Value::as_str).map(str::to_owned);
         let verify = setting("assist_verify").as_deref().and_then(Verify::parse).filter(|v| *v == Verify::Temporary || custom.is_some()).unwrap_or(Verify::Temporary);
         let refresh = setting("assist_refresh").as_deref().and_then(Refresh::parse).unwrap_or(Refresh::Session);
-        // Official default is "not allowed"; the switch state persists like isAllowRecipient.
-        let allowed = std::env::var("UU_ASSIST_ALLOW").ok().as_deref() == Some("1")
-            || config.get("assist_allow").and_then(Value::as_bool) == Some(true);
+        // 每次启动都自动允许他人远程协助，无需在窗口里手动打开；窗口/托盘里的开关仍
+        // 可以在本次运行中临时关闭，UU_ASSIST_ALLOW=0 可让启动时保持关闭。
+        let allowed = std::env::var("UU_ASSIST_ALLOW").ok().as_deref() != Some("0");
         Ok((custom, verify, refresh, allowed))
     }
     fn lock() -> Result<std::fs::File, String> {
@@ -441,8 +441,8 @@ impl Assist {
         if crate::login::write_config(&cfg).is_err() { log::warn!("Assist setting could not be saved: key={key}"); }
     }
     pub fn reset(&mut self) -> Result<(), String> { self.code = generate_code()?; self.code_at = std::time::Instant::now(); self.show() }
-    pub fn allow(&mut self) -> Result<(), String> { self.allowed = true; self.save("assist_allow", json!(true)); self.show() }
-    pub fn deny(&mut self) -> Result<(), String> { self.allowed = false; self.save("assist_allow", json!(false)); self.show() }
+    pub fn allow(&mut self) -> Result<(), String> { self.allowed = true; self.show() }
+    pub fn deny(&mut self) -> Result<(), String> { self.allowed = false; self.show() }
     pub fn set_verify(&mut self, verify: Verify) -> Result<(), String> {
         if verify != Verify::Temporary && self.custom.is_none() { return self.show(); } // UI asks for a code first
         self.verify = verify; self.save("assist_verify", json!(verify.name())); self.show()

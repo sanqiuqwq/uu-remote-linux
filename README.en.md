@@ -321,7 +321,7 @@ connect from 开始协助 (remote assistance) in UU Remote.
 - **Tray icon**: a background host shows a tray icon with Open main window, the allow switch and Quit. GNOME needs
   the AppIndicator extension (bundled on Ubuntu); Xfce / Cinnamon / KDE work as is. Quit stops `uuremote-native.service`;
   the launcher starts it again.
-- **Settings** (as in the official client): allow switch (off by default); verification by temporary code, custom code
+- **Settings** (as in the official client): allow switch (on by default; enabled at every start); verification by temporary code, custom code
   (8–16 letters and digits) or either; temporary code rotation after each session / hourly / 12 h / 24 h / never;
   copy buttons for the ID and the code. Stored in the 0600 config.
 - The code is only shown in the local window, never logged. Without a desktop, `uuremote-server assist` shows it on the
@@ -401,7 +401,7 @@ Common environment variables:
 | `UU_FFMPEG_ROOT` | Use FFmpeg from this prefix |
 | `UU_AUDIO=0` | Disable sound; `UU_AUDIO_SOURCE` picks the PulseAudio source |
 | `UU_REMOTE_ASSIST=0` | Disable remote assistance (no guest assistance before sign-in either) |
-| `UU_ASSIST_ALLOW=1` | Allow remote assistance at start (overrides the saved switch) |
+| `UU_ASSIST_ALLOW=0` | Do not allow remote assistance automatically at start (it is allowed on every start by default) |
 | `UU_LOGIN_WINDOW=0` | Do not open the login window automatically when credentials are missing |
 | `UU_PORT_MAPPING=0` | Disable port mapping (the official host's controlled-side switch) |
 | `UU_WOL_HELPER=1` | Experimental: act as a remote-boot helper like the official Windows host — report this host's LAN info after sign-in and send a magic packet to the LAN when the cloud asks to wake a PC (not verified end to end) |

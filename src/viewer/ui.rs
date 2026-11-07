@@ -99,6 +99,10 @@ pub async fn run(credentials: impl Fn() -> Result<crate::auth::Credentials, Stri
     // Account token seen last; a new sign-in restarts a host the user turned on.
     let mut host_token: Option<String> = None;
     let mut just_logged_in = false;
+    // 每次启动控制端都自动开启本机被控（「允许同账号控制本设备」）；UU_VIEWER_HOST=0 不管理。
+    if super::host::managed() && !super::host::active() {
+        if let Err(e) = super::host::enable(&exe) { log::warn!("Host service not enabled at startup: {e}"); }
+    }
     unsafe { uu_viewer_ui_set_host(super::host::active().into()) }
     let refresh = |creds: &crate::auth::Credentials| {
         let api = super::api::Api::new(crate::auth::UUAuthClient::new(creds.clone()), crate::auth::BASE_URL);
@@ -117,8 +121,8 @@ pub async fn run(credentials: impl Fn() -> Result<crate::auth::Credentials, Stri
             match credentials() {
                 Ok(creds) => {
                     set_login(true, "", "", crate::i18n::s("已登录","Signed in"));
-                    // Hosting is opt-in (Settings switch): signing in never starts the host, but a
-                    // host the user turned on goes online with the new account.
+                    // Hosting is enabled at viewer startup (Settings switch still applies): a
+                    // running host goes online with the new account, a disabled one stays off.
                     if host_token.as_deref() != Some(creds.token.as_str()) {
                         let changed = host_token.is_some() || std::mem::take(&mut just_logged_in);
                         if changed && super::host::managed() && super::host::active() {

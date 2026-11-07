@@ -1,7 +1,8 @@
 //! "Allow the same account to control this device": the Settings switch runs this computer's own
 //! host (`uuremote-server`, the sibling binary) as the systemd user service, so the Linux machine
-//! shows up in every client of that account. Hosting is opt-in: the viewer never enables the
-//! service by itself, and the unit's enabled state is the saved choice. The host reads the shared
+//! shows up in every client of that account. The viewer enables the service on every launch, so
+//! hosting is on by default at startup; the Settings switch can still stop it for the current
+//! session, and `UU_VIEWER_HOST=0` leaves it unmanaged. The host reads the shared
 //! config.json, so a running host only needs a restart to go online with a new account.
 use std::process::{Command, Stdio};
 
