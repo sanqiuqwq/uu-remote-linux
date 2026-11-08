@@ -1,0 +1,263 @@
+diff --git a/src/remotedesktop.c b/src/remotedesktop.c
+index 0f82085..d866207 100644
+--- a/src/remotedesktop.c
++++ b/src/remotedesktop.c
+@@ -818,13 +818,56 @@ handle_start (XdpImplRemoteDesktop *object,
+ 
+   if (!restore_from_data (remote_desktop_session))
+     {
+-      RemoteDesktopDialogHandle *dialog_handle;
++      if (screen_cast_is_whitelisted_app (arg_app_id))
++        {
++          g_autoptr(GPtrArray) streams = NULL;
++          g_autoptr(GError) error = NULL;
++          gboolean need_streams =
++            remote_desktop_session->select.screen_cast_enable;
++
++          if (need_streams)
++            streams = screen_cast_auto_select_streams (
++              &remote_desktop_session->select.screen_cast);
++
++          if (!need_streams || (streams && streams->len > 0))
++            {
++              if (start_session (remote_desktop_session,
++                                 remote_desktop_session->select.device_types,
++                                 streams,
++                                 remote_desktop_session->clipboard.clipboard_requested,
++                                 TRUE,
++                                 &error))
++                {
++                  g_message ("Auto-approved RemoteDesktop for whitelisted app_id=%s "
++                             "devices=0x%x streams=%u clipboard=%d",
++                             arg_app_id,
++                             (unsigned) remote_desktop_session->select.device_types,
++                             streams ? streams->len : 0,
++                             remote_desktop_session->clipboard.clipboard_requested);
++                  request_unexport (request);
++                  return TRUE;
++                }
++
++              g_warning ("Failed to auto-start whitelisted remote desktop: %s",
++                         error ? error->message : "no streams");
++              cancel_start_session (remote_desktop_session, 2);
++              request_unexport (request);
++              return TRUE;
++            }
++
++          g_message ("Whitelisted app_id=%s asked for a non-monitor source; showing the dialog",
++                     arg_app_id);
++        }
+ 
+-      dialog_handle = create_remote_desktop_dialog (remote_desktop_session,
+-                                                    invocation,
+-                                                    request,
+-                                                    arg_parent_window);
+-      remote_desktop_session->dialog_handle = dialog_handle;
++      {
++        RemoteDesktopDialogHandle *dialog_handle;
++
++        dialog_handle = create_remote_desktop_dialog (remote_desktop_session,
++                                                      invocation,
++                                                      request,
++                                                      arg_parent_window);
++        remote_desktop_session->dialog_handle = dialog_handle;
++      }
+     }
+ 
+   return TRUE;
+diff --git a/src/screencast.c b/src/screencast.c
+index be9354f..7f98e83 100644
+--- a/src/screencast.c
++++ b/src/screencast.c
+@@ -668,14 +668,43 @@ handle_start (XdpImplScreenCast     *object,
+ 
+   if (!restore_stream_from_data (screen_cast_session))
+     {
+-      ScreenCastDialogHandle *dialog_handle;
++      if (screen_cast_is_whitelisted_app (arg_app_id))
++        {
++          g_autoptr(GPtrArray) streams = NULL;
++          g_autoptr(GError) error = NULL;
++
++          streams = screen_cast_auto_select_streams (&screen_cast_session->select);
++          if (streams && streams->len > 0)
++            {
++              if (start_session (screen_cast_session, streams, &error))
++                {
++                  g_message ("Auto-approved ScreenCast for whitelisted app_id=%s streams=%u",
++                             arg_app_id, streams->len);
++                  request_unexport (request);
++                  return TRUE;
++                }
++
++              g_warning ("Failed to auto-start whitelisted screen cast: %s",
++                         error ? error->message : "no streams");
++              cancel_start_session (screen_cast_session, 2);
++              request_unexport (request);
++              return TRUE;
++            }
++
++          g_message ("Whitelisted app_id=%s asked for a non-monitor source; showing the dialog",
++                     arg_app_id);
++        }
+ 
+-      dialog_handle = create_screen_cast_dialog (screen_cast_session,
+-                                                 invocation,
+-                                                 request,
+-                                                 arg_parent_window);
++      {
++        ScreenCastDialogHandle *dialog_handle;
+ 
+-      screen_cast_session->dialog_handle = dialog_handle;
++        dialog_handle = create_screen_cast_dialog (screen_cast_session,
++                                                   invocation,
++                                                   request,
++                                                   arg_parent_window);
++
++        screen_cast_session->dialog_handle = dialog_handle;
++      }
+     }
+ 
+   return TRUE;
+@@ -697,6 +726,114 @@ screen_cast_source_types_from_flags (uint32_t flags) {
+   };
+ }
+ 
++/*
++ * Strict whitelist for uu-remote-linux. The app id comes from the frontend, which resolved it
++ * through org.freedesktop.host.portal.Registry for the caller's own D-Bus connection. The
++ * installed desktop file must exist as well, so an uninstalled or misspelled id falls back to
++ * the normal dialog. No other app id, and in particular no empty app id, is ever auto-approved.
++ */
++gboolean
++screen_cast_is_whitelisted_app (const char *app_id)
++{
++  const char * const *system_dirs;
++  g_autofree gchar *relative = NULL;
++  gboolean found = FALSE;
++
++  if (g_strcmp0 (app_id, "uu-remote-linux") != 0)
++    return FALSE;
++
++  relative = g_build_filename ("applications", "uu-remote-linux.desktop", NULL);
++  system_dirs = g_get_system_data_dirs ();
++  for (int i = 0; system_dirs[i] && !found; i++)
++    {
++      g_autofree gchar *path = g_build_filename (system_dirs[i], relative, NULL);
++      found = g_file_test (path, G_FILE_TEST_IS_REGULAR);
++    }
++  if (!found)
++    {
++      g_autofree gchar *path =
++        g_build_filename (g_get_user_data_dir (), relative, NULL);
++      found = g_file_test (path, G_FILE_TEST_IS_REGULAR);
++    }
++
++  if (!found)
++    g_warning ("Whitelisted app id %s has no installed desktop file, using the dialog",
++               app_id);
++
++  return found;
++}
++
++GPtrArray *
++screen_cast_auto_select_streams (ScreenCastSelection *selection)
++{
++  DisplayStateTracker *display_state_tracker = display_state_tracker_get ();
++  GList *logical_monitors =
++    display_state_tracker_get_logical_monitors (display_state_tracker);
++  GPtrArray *streams;
++  LogicalMonitor *primary = NULL;
++  GList *l;
++  uint32_t id = 0;
++
++  if (!selection->source_types.monitor)
++    return NULL;
++
++  streams = g_ptr_array_new_with_free_func (
++    (GDestroyNotify) screen_cast_stream_info_free);
++
++  for (l = logical_monitors; l; l = l->next)
++    {
++      if (logical_monitor_is_primary (l->data))
++        {
++          primary = l->data;
++          break;
++        }
++    }
++
++  if (!selection->multiple)
++    {
++      LogicalMonitor *chosen =
++        primary ? primary : (logical_monitors ? logical_monitors->data : NULL);
++      GList *monitors;
++
++      if (!chosen)
++        return streams;
++
++      for (monitors = logical_monitor_get_monitors (chosen);
++           monitors;
++           monitors = monitors->next)
++        {
++          ScreenCastStreamInfo *info = g_new0 (ScreenCastStreamInfo, 1);
++
++          info->type = SCREEN_CAST_SOURCE_TYPE_MONITOR;
++          info->data.monitor = monitor_dup (monitors->data);
++          info->id = id++;
++          g_ptr_array_add (streams, info);
++          break;
++        }
++
++      return streams;
++    }
++
++  for (l = logical_monitors; l; l = l->next)
++    {
++      GList *monitors;
++
++      for (monitors = logical_monitor_get_monitors (l->data);
++           monitors;
++           monitors = monitors->next)
++        {
++          ScreenCastStreamInfo *info = g_new0 (ScreenCastStreamInfo, 1);
++
++          info->type = SCREEN_CAST_SOURCE_TYPE_MONITOR;
++          info->data.monitor = monitor_dup (monitors->data);
++          info->id = id++;
++          g_ptr_array_add (streams, info);
++        }
++    }
++
++  return streams;
++}
++
+ static gboolean
+ handle_select_sources (XdpImplScreenCast     *object,
+                        GDBusMethodInvocation *invocation,
+diff --git a/src/screencast.h b/src/screencast.h
+index ae2beec..0a844d3 100644
+--- a/src/screencast.h
++++ b/src/screencast.h
+@@ -40,6 +40,11 @@ typedef struct _ScreenCastSourceTypes
+ 
+ ScreenCastSourceTypes screen_cast_source_types_from_flags (uint32_t flags);
+ 
++/* uu-remote-linux whitelist: only this app id (and only with its installed desktop file)
++ * skips the ScreenCast/RemoteDesktop consent dialog; everything else keeps the dialog. */
++gboolean screen_cast_is_whitelisted_app (const char *app_id);
++
++
+ typedef enum _ScreenCastCursorMode
+ {
+   SCREEN_CAST_CURSOR_MODE_NONE = 0,
+@@ -62,6 +67,10 @@ typedef struct _ScreenCastSelection
+   ScreenCastCursorMode cursor_mode;
+ } ScreenCastSelection;
+ 
++/* Streams for the requested selection without a dialog: the primary monitor, or every monitor
++ * when multiple is requested. NULL when the request is not for monitors. */
++GPtrArray * screen_cast_auto_select_streams (ScreenCastSelection *selection);
++
+ typedef struct
+ {
+   ScreenCastSourceType type;

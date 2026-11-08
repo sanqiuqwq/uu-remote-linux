@@ -655,6 +655,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = install_host_signals(None);
     video::warm_auto_probe();
     video::check_ffmpeg_usable();
+    // A force-stopped GNOME session (RDP login) can leave the user manager environment naming a
+    // dead compositor; resolve the live display before backend selection and portal re-init.
+    desktop_backend::adopt_current_session();
 
     if !desktop_backend::headless() && desktop_backend::detect()? == desktop_backend::DesktopBackend::X11 && desktop_backend::wayland_session_running() {
         // X11 capture inside a Wayland session reads XWayland's root window: all black, no error (#61).

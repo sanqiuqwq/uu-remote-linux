@@ -1,4 +1,7 @@
 //! Select the host desktop, not the presence of an XWayland DISPLAY socket.
+use std::process::Command;
+use std::time::{Duration, Instant};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DesktopBackend { X11, Wayland, Portal, Kms }
 
@@ -14,6 +17,61 @@ pub fn wayland_session_running() -> bool {
         || std::env::var_os("XDG_RUNTIME_DIR").and_then(|dir| std::fs::read_dir(dir).ok())
             .is_some_and(|entries| entries.flatten().any(|e| e.file_name().to_str()
                 .is_some_and(|n| n.starts_with("wayland-") && !n.ends_with(".lock"))))
+}
+
+/// The display logind reports for this user's active graphical session (`wayland-0`, `:0`).
+fn active_display() -> Option<String> {
+    let uid = unsafe { libc::getuid() }.to_string();
+    let out = Command::new("loginctl").args(["show-user", &uid, "-p", "Display", "--value"]).output().ok()?;
+    let display = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    out.status.success().then_some(display).filter(|d| !d.is_empty())
+}
+
+fn wayland_socket(display: &str) -> bool {
+    std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)
+        .is_some_and(|dir| dir.join(display).exists())
+}
+
+/// A force-stopped GNOME session (RDP login) leaves the user manager environment pointing at
+/// the dead compositor: `WAYLAND_DISPLAY` names a socket that no longer exists. Resolve the
+/// live display from logind and export it before backend detection, bounded by 15 s (the RDP
+/// session may still be starting). Nothing changes for a live socket or an X11 session.
+pub fn adopt_current_session() {
+    if headless() || std::env::var("UU_DESKTOP_BACKEND").as_deref() == Ok("x11") { return; }
+    if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11") { return; }
+    let wayland = std::env::var("WAYLAND_DISPLAY").ok().filter(|d| !d.is_empty());
+    match &wayland {
+        Some(display) if wayland_socket(display) => return, // the session that started us is alive
+        Some(_) => {}
+        None if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("wayland") => {}
+        None => return, // no graphical environment at all: keep the existing fallbacks
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut reported = false;
+    loop {
+        match active_display() {
+            Some(display) if display.starts_with("wayland-") && wayland_socket(&display) => {
+                std::env::set_var("WAYLAND_DISPLAY", &display);
+                std::env::set_var("XDG_SESSION_TYPE", "wayland");
+                log::info!("Session environment refreshed: WAYLAND_DISPLAY={display}");
+                return;
+            }
+            Some(display) if display.starts_with(':') => {
+                std::env::set_var("DISPLAY", &display);
+                std::env::set_var("XDG_SESSION_TYPE", "x11");
+                log::info!("Session environment refreshed: DISPLAY={display}");
+                return;
+            }
+            _ if Instant::now() >= deadline => {
+                log::warn!("Stale WAYLAND_DISPLAY {:?} and no live session display after 15 s; keeping the inherited environment", wayland);
+                return;
+            }
+            _ => {
+                if !reported { log::info!("Waiting for the new graphical session to publish a display"); reported = true; }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
 }
 
 pub fn detect() -> Result<DesktopBackend, String> {
