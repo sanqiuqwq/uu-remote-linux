@@ -350,7 +350,16 @@ mod native {
             Ok(true)
         }
         pub fn open_cancellable(cancelled: &std::sync::atomic::AtomicBool) -> Result<Self, super::PortalError> {
-            Self::open_inner(Some(cancelled), None, false, false)
+            match Self::open_inner(Some(cancelled), None, false, false) {
+                // A restored consent can come back without a monitor (the saved restore token no
+                // longer matches the layout, e.g. after a reboot or display change). Ask the host
+                // again instead of failing the whole desktop connection with code 6.
+                Err(error) if error.code == 6 && !cancelled.load(std::sync::atomic::Ordering::Acquire) => {
+                    log::warn!("Portal saved consent has no monitor; asking the host again");
+                    Self::open_inner(Some(cancelled), None, true, false)
+                }
+                result => result,
+            }
         }
         pub fn recover(&self, cancelled: &std::sync::atomic::AtomicBool) -> Result<bool, super::PortalError> {
             use std::sync::atomic::Ordering;
