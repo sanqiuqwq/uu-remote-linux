@@ -270,6 +270,10 @@ started a second full host server instead, so check that a subcommand exists in 
 - logind `unlock-session` by the session owner clears the GNOME shield in ~3 s.
 - GNOME closes the portal session on lock; capture/input must share one portal session and be rebuilt after
   unlock. Portal input/clipboard permissions are persisted per desktop (0600 file); a revoked permission asks again.
+  GNOME 50 keys these consents by application identity: the portal engine registers `uu-remote-linux` (the installed
+  `uu-remote-linux.desktop` basename) through `org.freedesktop.host.portal.Registry` on the shared session bus before
+  the first portal call, and re-registers when `org.freedesktop.portal.Desktop` changes owner. Without it the backend
+  sees an empty app_id and restore tokens never match.
 
 ## 9. Debugging checklist
 

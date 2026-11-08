@@ -24,6 +24,10 @@
 #define SCREEN "org.freedesktop.portal.ScreenCast"
 #define REQUEST "org.freedesktop.portal.Request"
 #define SESSION "org.freedesktop.portal.Session"
+#define REGISTRY "org.freedesktop.host.portal.Registry"
+/* Installed desktop file is uu-remote-linux.desktop; GNOME 50 attributes persisted
+ * RemoteDesktop/ScreenCast consents to this identity. */
+#define HOST_APP_ID "uu-remote-linux"
 #define PORTAL_RENEGOTIATION_TIMEOUT (5 * G_TIME_SPAN_SECOND)
 #define PORTAL_DISPLAY_GRACE (200 * G_TIME_SPAN_MILLISECOND)
 #define MUTTER_DISPLAY "org.gnome.Mutter.DisplayConfig"
@@ -84,6 +88,82 @@ static pthread_once_t pw_once = PTHREAD_ONCE_INIT;
 static atomic_uint token_sequence = 1;
 static void initialize_pipewire(void) { pw_init(NULL, NULL); }
 static GVariant *empty_options(void) { return g_variant_new_array(G_VARIANT_TYPE("{sv}"), NULL, 0); }
+/* GNOME 50 keys persisted portal consents by application identity. Without
+ * org.freedesktop.host.portal.Registry the frontend sees an empty app_id, restore
+ * tokens never match, RemoteDesktop.Start returns no stream and the desktop fails
+ * with code 6. The frontend remembers the identity per D-Bus connection, so the
+ * Register call must happen on the same shared session bus and before the first
+ * portal call (properties included). */
+static pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
+static char *registry_owner;         /* portal owner the current registration belongs to */
+static int registry_ok, registry_failed_logged, registry_watching;
+static void registry_record(char *owner, int ok, GError *error) {
+    int registered = 0, failed = 0;
+    pthread_mutex_lock(&registry_lock);
+    int duplicate = registry_owner && !strcmp(registry_owner, owner);
+    if (!duplicate) { g_free(registry_owner); registry_owner = owner; } else g_free(owner);
+    if (ok) { registry_ok = 1; registry_failed_logged = 0; registered = !duplicate; }
+    else { registry_ok = 0; failed = !duplicate && !registry_failed_logged; registry_failed_logged = 1; }
+    pthread_mutex_unlock(&registry_lock);
+    if (registered) fprintf(stderr, "Portal host application registered: %s\n", HOST_APP_ID);
+    if (failed) fprintf(stderr, "Portal host application registration failed: %s%s%s\n",
+        error ? g_quark_to_string(error->domain) : "unknown",
+        error ? ": " : "", error && error->message ? error->message : "no reply");
+}
+static void registry_async_done(GObject *source, GAsyncResult *result, gpointer data) {
+    char *owner = data;
+    GError *error = NULL;
+    GVariant *reply = g_dbus_connection_call_finish(G_DBUS_CONNECTION(source), result, &error);
+    int ok = reply != NULL;
+    if (reply) g_variant_unref(reply);
+    registry_record(owner, ok, error);
+    g_clear_error(&error);
+}
+static void portal_owner_changed(GDBusConnection *bus, const gchar *sender, const gchar *path,
+    const gchar *interface, const gchar *signal, GVariant *parameters, gpointer data) {
+    const char *name = NULL, *old_owner = NULL, *new_owner = NULL;
+    g_variant_get(parameters, "(&s&s&s)", &name, &old_owner, &new_owner);
+    pthread_mutex_lock(&registry_lock);
+    g_free(registry_owner); registry_owner = NULL;
+    registry_ok = 0; registry_failed_logged = 0;
+    pthread_mutex_unlock(&registry_lock);
+    if (!*new_owner) return; /* portal gone; the next session registers again */
+    /* Async: a sync call from a signal handler on the same connection can deadlock. */
+    g_dbus_connection_call(bus, DEST, PATH, REGISTRY, "Register",
+        g_variant_new("(s@a{sv})", HOST_APP_ID, empty_options()), NULL,
+        G_DBUS_CALL_FLAGS_NONE, 2000, NULL, registry_async_done, g_strdup(new_owner));
+}
+static void watch_portal_owner(GDBusConnection *bus) {
+    pthread_mutex_lock(&registry_lock);
+    int install = !registry_watching;
+    registry_watching = 1;
+    pthread_mutex_unlock(&registry_lock);
+    if (!install) return;
+    g_dbus_connection_signal_subscribe(bus, "org.freedesktop.DBus", "org.freedesktop.DBus",
+        "NameOwnerChanged", "/org/freedesktop/DBus", DEST, G_DBUS_SIGNAL_FLAGS_NONE,
+        portal_owner_changed, NULL, NULL);
+}
+static void register_host_application(struct uu_portal *p) {
+    GVariant *reply = g_dbus_connection_call_sync(p->bus, "org.freedesktop.DBus",
+        "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner",
+        g_variant_new("(s)", DEST), G_VARIANT_TYPE("(s)"), G_DBUS_CALL_FLAGS_NONE, 1000, NULL, NULL);
+    if (!reply) return; /* portal unavailable: leave the existing error path alone */
+    char *owner = NULL;
+    g_variant_get(reply, "(s)", &owner);
+    g_variant_unref(reply);
+    pthread_mutex_lock(&registry_lock);
+    int skip = registry_owner && !strcmp(registry_owner, owner);
+    pthread_mutex_unlock(&registry_lock);
+    if (skip) { g_free(owner); return; }
+    GError *error = NULL;
+    reply = g_dbus_connection_call_sync(p->bus, DEST, PATH, REGISTRY, "Register",
+        g_variant_new("(s@a{sv})", HOST_APP_ID, empty_options()), NULL,
+        G_DBUS_CALL_FLAGS_NONE, 2000, NULL, &error);
+    int ok = reply != NULL;
+    if (reply) g_variant_unref(reply);
+    registry_record(owner, ok, error);
+    g_clear_error(&error);
+}
 static int open_cancelled(struct uu_portal *p) {
     return p->cancelled && p->cancelled(p->cancel_data);
 }
@@ -625,6 +705,9 @@ static struct uu_portal *open_persist(const char *restore, void (*save_token)(co
     p->context = g_main_context_new(); g_main_context_push_thread_default(p->context);
     p->bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
     if (!p->bus) { *error = 1; goto done; }
+    watch_portal_owner(p->bus);
+    if (open_cancelled(p)) { *error = 13; goto done; }
+    register_host_application(p);
     if (open_cancelled(p)) { *error = 13; goto done; }
     int interfaces_available = has_interface(p, REMOTE) && has_interface(p, SCREEN);
     if (open_cancelled(p)) { *error = 13; goto done; }
